@@ -22,6 +22,12 @@ db = mysql.connector.connect(
 
 cursor = db.cursor(dictionary=True)
 
+# ---------------- ROOT ---------------- #
+
+@app.get("/")
+def read_root():
+    return {"message": "Movie Recommendation API is running with MySQL"}
+
 # ---------------- MODELS ---------------- #
 
 class MoodInput(BaseModel):
@@ -44,72 +50,87 @@ GENRE_MAP = {
     "Sci-Fi": 878
 }
 
-# ---------------- ROOT ---------------- #
-
-@app.get("/")
-def read_root():
-    return {"message": "Movie Recommendation API is running with MySQL"}
+ALLOWED_GENRES = list(GENRE_MAP.keys())
 
 # ---------------- GEMINI FUNCTION ---------------- #
 
 def get_genre_from_gemini(mood: str):
     api_key = os.getenv("GEMINI_API_KEY")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    if not api_key:
+        print("GEMINI API KEY NOT FOUND")
+        return "Drama"
+
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
 
     headers = {
         "Content-Type": "application/json"
     }
 
-    data = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": f"""
-Convert this mood into ONE movie genre only.
+    prompt = f"""
+You are a movie expert.
 
-Choose strictly from:
-Action, Comedy, Drama, Horror, Romance, Thriller, Sci-Fi.
+Based on the mood below, return ONLY ONE genre 
+from this list exactly as written:
+
+Action
+Comedy
+Drama
+Horror
+Romance
+Thriller
+Sci-Fi
 
 Mood: {mood}
 
 Return only the genre word.
 """
-                    }
+
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
                 ]
             }
         ]
     }
 
-    response = requests.post(url, headers=headers, json=data, timeout=10)
-    result = response.json()
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        result = response.json()
 
-    raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        genre = result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    # Clean the output properly
-    for genre in GENRE_MAP.keys():
-        if genre.lower() in raw_text.lower():
-            return genre
+        if genre not in ALLOWED_GENRES:
+            print("Gemini returned invalid genre:", genre)
+            return "Drama"
 
-    # If Gemini gives something unexpected, just return its cleaned text
-    return raw_text
+        return genre
+
+    except Exception as e:
+        print("GEMINI ERROR:", e)
+        return "Drama"
 
 # ---------------- TMDB FUNCTION ---------------- #
 
 def get_movies_from_tmdb(genre: str):
     api_key = os.getenv("TMDB_API_KEY")
 
-    genre_id = GENRE_MAP.get(genre)
-
-    # If Gemini returned something invalid, skip TMDB safely
-    if not genre_id:
+    if not api_key:
+        print("TMDB API KEY NOT FOUND")
         return {"results": []}
+
+    genre_id = GENRE_MAP.get(genre, 18)
 
     url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_genres={genre_id}"
 
-    response = requests.get(url, timeout=10)
-    return response.json()
+    try:
+        response = requests.get(url, timeout=10)
+        return response.json()
+    except Exception as e:
+        print("TMDB ERROR:", e)
+        return {"results": []}
 
 # ---------------- RECOMMEND ENDPOINT ---------------- #
 
@@ -128,8 +149,8 @@ def recommend_movies(data: MoodInput):
         """
         cursor.execute(query, (mood, genre))
         db.commit()
-    except:
-        pass
+    except Exception as e:
+        print("DB ERROR:", e)
 
     return {
         "mood": mood,
@@ -152,7 +173,9 @@ def add_test_favourite(movie: TestMovie):
         db.commit()
 
         return {"message": "Movie added successfully"}
-    except:
+
+    except Exception as e:
+        print("DB ERROR:", e)
         return {"message": "Failed to add movie"}
 
 # ---------------- GET FAVOURITES ---------------- #
@@ -160,7 +183,10 @@ def add_test_favourite(movie: TestMovie):
 @app.get("/favourites")
 def get_favourites():
     try:
-        cursor.execute("SELECT * FROM favourites")
-        return cursor.fetchall()
-    except:
+        query = "SELECT * FROM favourites"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        return results
+    except Exception as e:
+        print("DB ERROR:", e)
         return []
